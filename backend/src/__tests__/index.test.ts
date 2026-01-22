@@ -1,7 +1,7 @@
 // Backend tests - placeholder for contributors
 // TODO: Implement actual tests - see backend-06-monitoring.md issue template
 
-import { runSimulation } from '../simulator';
+import { SimulatorService } from '../simulator/simulator.service';
 
 describe('Backend API', () => {
   test('should have health endpoint', () => {
@@ -16,14 +16,20 @@ describe('Backend API', () => {
 });
 
 describe('Simulator', () => {
+  let service: SimulatorService;
+
+  beforeEach(() => {
+    service = new SimulatorService();
+  });
+
   test('should simulate credit scoring deterministically', () => {
     const request = {
       scenario: 'credit-score' as const,
       data: { balance: 1000, history: 5 },
       seed: 42
     };
-    const result1 = runSimulation(request);
-    const result2 = runSimulation(request);
+    const result1 = service.runSimulation(request);
+    const result2 = service.runSimulation(request);
     
     expect(result1.result.creditScore).toBe(result2.result.creditScore);
     expect(result1.events).toHaveLength(1);
@@ -36,8 +42,8 @@ describe('Simulator', () => {
       data: { amount: 5000 },
       seed: 1
     };
-    const result1 = runSimulation(request);
-    const result2 = runSimulation(request);
+    const result1 = service.runSimulation(request);
+    const result2 = service.runSimulation(request);
     
     expect(result1.result.isFraud).toBe(result2.result.isFraud);
     expect(result1.events).toHaveLength(1);
@@ -49,6 +55,6 @@ describe('Simulator', () => {
       scenario: 'unknown' as any,
       data: {}
     };
-    expect(() => runSimulation(request)).toThrow('Unknown scenario');
+    expect(() => service.runSimulation(request)).toThrow('Unknown scenario');
   });
 });
