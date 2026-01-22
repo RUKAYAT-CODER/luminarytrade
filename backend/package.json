@@ -1,5 +1,5 @@
 {
-  "name": "@chenaikit/backend",
+  "name": "stellar-submitter",
   "version": "0.1.0",
   "description": "Backend services for ChenAIKit",
   "main": "src/main.ts",
@@ -8,7 +8,8 @@
     "dev": "ts-node --watch src/main.ts",
     "build": "tsc",
     "test": "jest",
-    "lint": "eslint src/**/*.ts"
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage"
   },
   "dependencies": {
     "@chenaikit/core": "workspace:*",
