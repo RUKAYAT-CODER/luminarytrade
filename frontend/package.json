@@ -4,11 +4,13 @@
   "description": "Frontend applications for ChenAIKit",
   "main": "src/index.tsx",
   "scripts": {
+    "dev": "react-scripts start",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "lint": "eslint src/**/*.{ts,tsx}"
+    "lint": "eslint src/**/*.{ts,tsx}",
+    "analyze": "source-map-explorer 'build/static/js/*.js'"
   },
   "dependencies": {
     "@emotion/react": "^11.11.0",

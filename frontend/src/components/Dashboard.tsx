@@ -1,13 +1,16 @@
-// ChenAIKit Dashboard Component
-// TODO: Implement dashboard - See frontend-01-react-components.md issue template
+import React, { Suspense, lazy } from 'react';
 
-import React from 'react';
+const HeavyChart = lazy(() => import('./HeavyChart'));
 
 const Dashboard: React.FC = () => {
   return (
     <div>
       <h2>Dashboard Component</h2>
       <p>Implementation pending - see frontend-01-react-components.md</p>
+
+      <Suspense fallback={<div>Loading chart...</div>}>
+        <HeavyChart />
+      </Suspense>
     </div>
   );
 };
