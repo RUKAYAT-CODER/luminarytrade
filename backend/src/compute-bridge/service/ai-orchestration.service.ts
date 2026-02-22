@@ -8,9 +8,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import * as crypto from "crypto";
-import { IAIProvider } from "../interface/ai-provider.interface";
 import {
-  AIProvider,
   AIResultEntity,
   AIResultStatus,
 } from "../entities/ai-result-entity";
@@ -19,75 +17,55 @@ import {
   ScoringRequestDto,
   ScoringResponseDto,
 } from "../dto/ai-scoring.dto";
-import { LlamaProvider } from "../provider/llama.provider";
-import { OpenAIProvider } from "../provider/open-ai.provider";
-import { GrokProvider } from "../provider/grok.provider";
 import { AuditLogService } from "../../audit/audit-log.service";
 import { AuditEventType } from "../../audit/entities/audit-log.entity";
-import { AIProviderFactory } from "../provider/ai-provider.factory";
 import { IEventBus } from "../../events/interfaces/event-bus.interface";
 import { 
   AIResultCreatedEvent, 
   AIResultCompletedEvent, 
   AIResultFailedEvent 
 } from "../../events/domain-events/ai-result.events";
+import { AdapterFactory } from "../../adapters/factory/adapter.factory";
+import { AdapterRegistry } from "../../adapters/registry/adapter.registry";
+import { FallbackHandler } from "../../adapters/patterns/fallback-handler";
 
+/**
+ * AI Orchestration Service
+ * Handles AI scoring operations using adapter abstraction.
+ * Now decoupled from specific AI providers - uses IAIModelAdapter instead.
+ */
 @Injectable()
 export class AIOrchestrationService {
   private readonly logger = new Logger(AIOrchestrationService.name);
-  private providers: Map<AIProvider, IAIProvider>;
   private readonly secretKey: string;
+  private readonly fallbackHandler: FallbackHandler<NormalizedScoringResult>;
 
   constructor(
     @InjectRepository(AIResultEntity)
     private aiResultRepository: Repository<AIResultEntity>,
     private configService: ConfigService,
     private auditLogService: AuditLogService,
-    @Inject("AIProviderFactory")
-    private readonly providerFactory: AIProviderFactory,
+    private readonly adapterFactory: AdapterFactory,
+    private readonly adapterRegistry: AdapterRegistry,
     @Inject("EventBus")
     private readonly eventBus: IEventBus,
   ) {
     this.secretKey =
       this.configService.get<string>("AI_SIGNATURE_SECRET") ||
       "default-secret-key";
+    this.fallbackHandler = new FallbackHandler<NormalizedScoringResult>(
+      "AIScoring",
+    );
   }
 
-  private initializeProviders(): void {
-    this.providers = new Map();
-
-    const openaiKey = this.configService.get<string>("OPENAI_API_KEY");
-    const grokKey = this.configService.get<string>("GROK_API_KEY");
-    const llamaKey = this.configService.get<string>("LLAMA_API_KEY");
-
-    if (openaiKey) {
-      this.providers.set(
-        AIProvider.OPENAI,
-        new OpenAIProvider(this.configService),
-      );
-      this.logger.log("OpenAI provider initialized");
-    }
-
-    if (grokKey) {
-      this.providers.set(AIProvider.GROK, new GrokProvider(grokKey));
-      this.logger.log("Grok provider initialized");
-    }
-
-    if (llamaKey) {
-      this.providers.set(AIProvider.LLAMA, new LlamaProvider(llamaKey));
-      this.logger.log("Llama provider initialized");
-    }
-
-    if (this.providers.size === 0) {
-      this.logger.warn("No AI providers configured");
-    }
-  }
-
+  /**
+   * Score user with fallback to multiple AI providers
+   */
   async scoreUser(request: ScoringRequestDto): Promise<ScoringResponseDto> {
     // Create initial record
     const aiResult = this.aiResultRepository.create({
       userId: request.userId,
-      provider: request.preferredProvider || this.selectProvider(),
+      provider: request.preferredProvider || "default",
       status: AIResultStatus.PENDING,
       request: request.userData,
       retryCount: 0,
@@ -125,6 +103,7 @@ export class AIOrchestrationService {
       aiResult.id,
       request.userId,
       request.userData,
+      request.preferredProvider,
     ).catch((error) => {
       this.logger.error(`Async scoring failed for ${aiResult.id}:`, error);
     });
@@ -157,10 +136,14 @@ export class AIOrchestrationService {
     });
   }
 
+  /**
+   * Execute scoring asynchronously with adapter fallback
+   */
   private async executeScoringAsync(
     resultId: string,
     wallet: string,
     userData: Record<string, any>,
+    preferredProvider?: string,
   ): Promise<void> {
     const aiResult = await this.aiResultRepository.findOne({
       where: { id: resultId },
@@ -171,17 +154,21 @@ export class AIOrchestrationService {
       aiResult.status = AIResultStatus.RETRYING;
       await this.aiResultRepository.save(aiResult);
 
-      const scoringResult = await this.scoreWithFallback(
-        aiResult.provider,
-        userData,
-        aiResult,
-      );
+      // Execute with adapter factory (circuit breaker + fallback)
+      const scoringResult =
+        await this.adapterFactory.executeAIOperationWithFallback(
+          async (adapter) => {
+            return await adapter.score(userData);
+          },
+          preferredProvider,
+        );
 
       // Sign the result
       const signature = this.signResult(scoringResult);
 
       // Update with success
       aiResult.status = AIResultStatus.SUCCESS;
+      aiResult.provider = scoringResult.provider;
       aiResult.response = scoringResult.rawResponse;
       aiResult.creditScore = scoringResult.creditScore;
       aiResult.riskScore = scoringResult.riskScore;
@@ -260,58 +247,6 @@ export class AIOrchestrationService {
     }
   }
 
-  private async scoreWithFallback(
-    primaryProvider: AIProvider,
-    userData: Record<string, any>,
-    aiResult: AIResultEntity,
-  ): Promise<NormalizedScoringResult> {
-    const providerOrder = this.getProviderFallbackOrder(primaryProvider);
-
-    for (const providerName of providerOrder) {
-      const provider = this.providers.get(providerName);
-      if (!provider) continue;
-
-      try {
-        aiResult.retryCount++;
-        await this.aiResultRepository.save(aiResult);
-
-        const result = await provider.score(userData);
-        this.logger.log(`Successfully scored with ${providerName}`);
-        return result;
-      } catch (error) {
-        this.logger.warn(`Provider ${providerName} failed:`, error.message);
-
-        if (aiResult.retryCount >= 3 * this.providers.size) {
-          throw new Error("All providers exhausted after retries");
-        }
-
-        continue;
-      }
-    }
-
-    throw new Error("All AI providers failed");
-  }
-
-  private getProviderFallbackOrder(primary: AIProvider): AIProvider[] {
-    const all = Array.from(this.providers.keys());
-    const order = [primary];
-
-    all.forEach((p) => {
-      if (p !== primary) order.push(p);
-    });
-
-    return order;
-  }
-
-  private selectProvider(): AIProvider {
-    const available = Array.from(this.providers.keys());
-    if (available.length === 0) {
-      throw new BadRequestException("No AI providers available");
-    }
-    // Simple round-robin or random selection
-    return available[Math.floor(Math.random() * available.length)];
-  }
-
   private signResult(result: NormalizedScoringResult): string {
     const data = JSON.stringify({
       provider: result.provider,
@@ -344,11 +279,19 @@ export class AIOrchestrationService {
     return expectedSignature === result.signature;
   }
 
-  async healthCheck(): Promise<Record<string, boolean>> {
+  /**
+   * Get health status of all registered AI adapters
+   */
+  async getAdapterHealth(): Promise<Record<string, boolean>> {
+    const adapters = this.adapterRegistry.getAllAIAdapters();
     const health: Record<string, boolean> = {};
 
-    for (const [name, provider] of this.providers.entries()) {
-      health[name] = await provider.isHealthy();
+    for (const adapter of adapters) {
+      try {
+        health[adapter.getName()] = await adapter.isHealthy();
+      } catch (error) {
+        health[adapter.getName()] = false;
+      }
     }
 
     return health;
