@@ -11,6 +11,7 @@ import { AuditLogModule } from './audit/audit-log.module';
 import { WorkerModule } from './worker/worker.module';
 import { OracleModule } from './oracle/oracle.module';
 import { TransactionModule } from './transaction/transaction.module';
+import { EventsModule } from './events/events.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { TransactionModule } from './transaction/transaction.module';
       },
     }),
     TransactionModule,
+    EventsModule,
     SimulatorModule,
     SubmitterModule,
     ComputeBridgeModule,
