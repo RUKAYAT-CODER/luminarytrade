@@ -5,28 +5,21 @@ import { AIResultEntity } from "./entities/ai-result-entity";
 import { ComputeBridgeController } from "./compute-bridge.controller";
 import { AIOrchestrationService } from "./service/ai-orchestration.service";
 import { AuditLogModule } from "../audit/audit-log.module";
-import { OpenAIProvider } from "./provider/open-ai.provider";
-import { GrokProvider } from "./provider/grok.provider";
-import { LlamaProvider } from "./provider/llama.provider";
-import { AIProviderFactoryImpl } from "./provider/ai-provider.factory.impl";
+import { AdaptersModule } from "../adapters/adapters.module";
 
+/**
+ * Compute Bridge Module
+ * Handles AI orchestration and scoring operations using adapter pattern.
+ */
 @Module({
   imports: [
     TypeOrmModule.forFeature([AIResultEntity]),
     ConfigModule,
     AuditLogModule,
+    AdaptersModule,
   ],
   controllers: [ComputeBridgeController],
-  providers: [
-    AIOrchestrationService,
-    OpenAIProvider,
-    GrokProvider,
-    LlamaProvider,
-    {
-      provide: "AIProviderFactory",
-      useClass: AIProviderFactoryImpl,
-    },
-  ],
+  providers: [AIOrchestrationService],
   exports: [AIOrchestrationService],
 })
 export class ComputeBridgeModule {}

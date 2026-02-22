@@ -1,20 +1,46 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Keypair } from '@stellar/stellar-sdk';
 import { LoginDto } from './dto/login.dto';
+import { AdapterFactory } from '../adapters/factory/adapter.factory';
 
+/**
+ * Auth Service
+ * Handles wallet authentication using adapter abstraction.
+ * Now decoupled from Stellar SDK - uses IWalletAdapter instead.
+ */
 @Injectable()
 export class AuthService {
-  constructor(private jwtService: JwtService) {}
+  private readonly logger = new Logger(AuthService.name);
 
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly adapterFactory: AdapterFactory,
+  ) {}
+
+  /**
+   * Validate wallet signature using adapter
+   * @param loginDto Login credentials with wallet signature
+   * @returns Wallet info if valid
+   */
   async validateWallet(loginDto: LoginDto) {
     const { publicKey, message, signature } = loginDto;
 
     try {
-      const keypair = Keypair.fromPublicKey(publicKey);
-      const isValid = keypair.verify(Buffer.from(message), Buffer.from(signature, 'base64'));
+      // Execute wallet operation with protection (circuit breaker)
+      const isValid = await this.adapterFactory.executeWalletOperationWithProtection(
+        async (walletAdapter) => {
+          // Validate address format first
+          if (!walletAdapter.validateAddress(publicKey)) {
+            throw new UnauthorizedException('Invalid wallet address format');
+          }
+
+          // Verify signature using adapter
+          return await walletAdapter.verifySignature(publicKey, message, signature);
+        },
+      );
 
       if (!isValid) {
+        this.logger.warn(`Invalid signature provided by wallet: ${publicKey}`);
         throw new UnauthorizedException('Invalid signature');
       }
 
@@ -25,12 +51,22 @@ export class AuthService {
       // TODO: Find or Create User in DB here
       // const user = await this.usersService.findOrCreate(publicKey);
 
+      this.logger.log(`Wallet authenticated successfully: ${publicKey}`);
       return { publicKey };
-    } catch (e) {
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      this.logger.error(`Authentication failed: ${error.message}`);
       throw new UnauthorizedException('Authentication failed');
     }
   }
 
+  /**
+   * Generate JWT token for authenticated wallet
+   * @param user User object with publicKey
+   * @returns JWT token
+   */
   async login(user: any) {
     const payload = { publicKey: user.publicKey, sub: user.publicKey };
     return {

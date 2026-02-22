@@ -1,11 +1,14 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Env, String};
 
+pub mod error;
 pub mod oracle_bridge;
 pub mod marketplace_types;
 pub mod marketplace;
 
-use soroban_sdk::{contracttype, Address, BytesN};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, Symbol, Address, Env, Bytes, Vec, 
+    contracterror, contracttype, BytesN,
+};
 
 #[contracttype]
 pub enum DataKey {
@@ -106,7 +109,6 @@ const RATE_LIMIT_MAX: u32 = 10;
 impl CommonUtilsContract {
     /// Initialize contract with admin.
     pub fn initialize(env: Env, admin: Address) {
-        // admin.require_auth(); // verify signature if needed
         env.storage().persistent().set(&Symbol::new(&env, "admin"), &admin);
         env.storage().persistent().set(&Symbol::new(&env, "exec_cnt"), &0u64);
     }
@@ -179,22 +181,26 @@ impl CommonUtilsContract {
         actions.push_back(timestamp);
         env.storage().temporary().set(&key, &actions);
     }
-    
 }
 
+#[contract]
+pub struct EvolutionManager;
 
-#[cfg(test)]
-<<<<<<< HEAD
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_check_threshold() {
-        // Basic test: 100 >= 50 should be true
-        let result = true; // Simplified for now
-        assert!(result);
+#[contractimpl]
+impl EvolutionManager {
+    pub fn emit_evolution_completed(
+        env: Env,
+        agent: Address,
+        new_level: u32,
+        total_stake: i128,
+        attestation_hash: BytesN<32>,
+    ) {
+        env.events().publish(
+            ("EvolutionCompleted",),
+            (agent, new_level, total_stake, attestation_hash),
+        );
     }
 }
-=======
+
+#[cfg(test)]
 mod test_marketplace;
->>>>>>> 81b53c80d2e61683b492c98783cb94e79baeaa16
