@@ -25,6 +25,12 @@ import { GrokProvider } from "../provider/grok.provider";
 import { AuditLogService } from "../../audit/audit-log.service";
 import { AuditEventType } from "../../audit/entities/audit-log.entity";
 import { AIProviderFactory } from "../provider/ai-provider.factory";
+import { IEventBus } from "../../events/interfaces/event-bus.interface";
+import { 
+  AIResultCreatedEvent, 
+  AIResultCompletedEvent, 
+  AIResultFailedEvent 
+} from "../../events/domain-events/ai-result.events";
 
 @Injectable()
 export class AIOrchestrationService {
@@ -39,6 +45,8 @@ export class AIOrchestrationService {
     private auditLogService: AuditLogService,
     @Inject("AIProviderFactory")
     private readonly providerFactory: AIProviderFactory,
+    @Inject("EventBus")
+    private readonly eventBus: IEventBus,
   ) {
     this.secretKey =
       this.configService.get<string>("AI_SIGNATURE_SECRET") ||
@@ -86,6 +94,17 @@ export class AIOrchestrationService {
     });
 
     await this.aiResultRepository.save(aiResult);
+
+    // Emit AI Result Created Event
+    const aiResultCreatedEvent = new AIResultCreatedEvent(
+      aiResult.id,
+      {
+        userId: aiResult.userId,
+        provider: aiResult.provider,
+        request: aiResult.request,
+      },
+    );
+    await this.eventBus.publish(aiResultCreatedEvent);
 
     // Log audit event for scoring started
     await this.auditLogService.logEvent(
@@ -172,6 +191,21 @@ export class AIOrchestrationService {
 
       await this.aiResultRepository.save(aiResult);
 
+      // Emit AI Result Completed Event
+      const aiResultCompletedEvent = new AIResultCompletedEvent(
+        aiResult.id,
+        {
+          userId: aiResult.userId,
+          provider: scoringResult.provider,
+          creditScore: aiResult.creditScore,
+          riskScore: aiResult.riskScore,
+          riskLevel: aiResult.riskLevel,
+          signature: signature,
+          completedAt: aiResult.completedAt,
+        },
+      );
+      await this.eventBus.publish(aiResultCompletedEvent);
+
       // Log audit event for scoring completed
       await this.auditLogService.logEvent(
         wallet,
@@ -195,6 +229,18 @@ export class AIOrchestrationService {
       aiResult.status = AIResultStatus.FAILED;
       aiResult.errorMessage = error.message;
       await this.aiResultRepository.save(aiResult);
+
+      // Emit AI Result Failed Event
+      const aiResultFailedEvent = new AIResultFailedEvent(
+        aiResult.id,
+        {
+          userId: aiResult.userId,
+          provider: aiResult.provider,
+          errorMessage: error.message,
+          failedAt: new Date(),
+        },
+      );
+      await this.eventBus.publish(aiResultFailedEvent);
 
       // Log audit event for scoring failed
       await this.auditLogService.logEvent(
