@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, EntityManager } from 'typeorm';
 import { UpdateOracleDto } from './dto/update-oracle.dto';
@@ -9,6 +9,11 @@ import { verifySignature } from './utils/signature.utils';
 import { TransactionManager } from '../transaction/transaction-manager.service';
 import { TransactionContext } from '../transaction/transaction-context';
 import { CustomOperation } from '../transaction/compensatable-operation';
+import { IEventBus } from '../events/interfaces/event-bus.interface';
+import { 
+  OracleSnapshotRecordedEvent, 
+  PriceFeedUpdatedEvent 
+} from '../events/domain-events/oracle.events';
 
 export interface FeedPrice {
   pair: string;
@@ -31,6 +36,8 @@ export class OracleService {
     @InjectRepository(OracleSnapshot) private readonly snapshotRepo: Repository<OracleSnapshot>,
     @InjectRepository(OracleLatestPrice) private readonly latestRepo: Repository<OracleLatestPrice>,
     private readonly transactionManager: TransactionManager,
+    @Inject("EventBus")
+    private readonly eventBus: IEventBus,
   ) {
     this.oracleSignerAddress = process.env.ORACLE_SIGNER_ADDRESS;
     this.maxClockSkewMs = parseInt(process.env.ORACLE_MAX_CLOCK_SKEW_MS || '120000', 10);
@@ -157,6 +164,35 @@ export class OracleService {
         this.logger.log(
           `Snapshot ${savedSnapshotId} created with ${dto.feeds.length} price feeds updated`,
         );
+
+        // Emit Oracle Snapshot Recorded Event
+        const oracleSnapshotEvent = new OracleSnapshotRecordedEvent(
+          savedSnapshotId,
+          {
+            signer: recovered,
+            signature: dto.signature,
+            feeds: dto.feeds,
+            timestamp: timestampDate,
+          },
+        );
+        await this.eventBus.publish(oracleSnapshotEvent);
+
+        // Emit Price Feed Updated Events for each feed
+        for (const feed of dto.feeds) {
+          const previousPrice = previousPrices.get(feed.pair);
+          const priceFeedEvent = new PriceFeedUpdatedEvent(
+            feed.pair,
+            {
+              pair: feed.pair,
+              price: feed.price,
+              decimals: feed.decimals,
+              previousPrice: previousPrice?.price,
+              timestamp: timestampDate,
+              snapshotId: savedSnapshotId,
+            },
+          );
+          await this.eventBus.publish(priceFeedEvent);
+        }
 
         return {
           snapshotId: savedSnapshotId,
