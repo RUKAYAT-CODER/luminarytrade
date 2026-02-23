@@ -2,6 +2,7 @@
 
 use soroban_sdk::{contracttype, Bytes, Env, Vec};
 use common_utils::error::{ValidationError, ContractError};
+use common_utils::parser::{MetadataParser, MetadataBuilder, ParserConfig};
 
 /// Legacy error type for backward compatibility
 /// Maps to new ValidationError codes
@@ -36,6 +37,18 @@ impl MetadataError {
             MetadataError::CidTooLong | MetadataError::HashTooLong => ValidationError::InvalidLength,
         }
     }
+    
+    /// Convert ValidationError to legacy MetadataError
+    pub fn from_validation_error(err: ValidationError) -> Self {
+        match err {
+            ValidationError::InvalidJsonStructure => MetadataError::InvalidJsonFormat,
+            ValidationError::MissingRequiredField => MetadataError::MissingRequiredField,
+            ValidationError::InvalidCidFormat => MetadataError::InvalidCidFormat,
+            ValidationError::InvalidHashFormat => MetadataError::HashVerificationFailed,
+            ValidationError::InvalidFormat => MetadataError::InvalidStructure,
+            ValidationError::InvalidLength => MetadataError::CidTooLong,
+        }
+    }
 }
 
 /// Structured agent metadata object
@@ -54,6 +67,20 @@ pub struct AgentMetadata {
     pub version: Bytes,
     /// Additional metadata fields
     pub extra_fields: Vec<(Bytes, Bytes)>,
+}
+
+impl AgentMetadata {
+    /// Convert from parsed metadata
+    pub fn from_parsed(parsed: common_utils::parser::metadata_parser::ParsedMetadata) -> Self {
+        Self {
+            json_cid: parsed.json_cid,
+            model_hash: parsed.model_hash,
+            name: parsed.name,
+            description: parsed.description,
+            version: parsed.version,
+            extra_fields: parsed.extra_fields,
+        }
+    }
 }
 
 /// CID validation constants
@@ -97,12 +124,25 @@ pub mod hash {
 }
 
 /// Main metadata validator and parser
-pub struct MetadataValidator;
+/// 
+/// Now uses the reusable parser framework from common-utils
+pub struct MetadataValidator {
+    parser: MetadataParser,
+}
 
 impl MetadataValidator {
-    /// Create a new validator instance
+    /// Create a new validator instance with default configuration
     pub fn new() -> Self {
-        Self
+        Self {
+            parser: MetadataParser::new(),
+        }
+    }
+    
+    /// Create a validator with custom parser configuration
+    pub fn with_config(config: ParserConfig) -> Self {
+        Self {
+            parser: MetadataParser::with_config(config),
+        }
     }
     
     /// Validate and parse agent metadata from raw components
@@ -120,7 +160,7 @@ impl MetadataValidator {
     /// * `Err(MetadataError)` - Validation error
     pub fn validate_and_parse(
         &self,
-        _env: &Env,
+        env: &Env,
         json_cid: Bytes,
         model_hash: Bytes,
         name: Bytes,
@@ -128,58 +168,33 @@ impl MetadataValidator {
         version: Bytes,
         extra_fields: Vec<(Bytes, Bytes)>,
     ) -> Result<AgentMetadata, MetadataError> {
-        // Validate JSON CID format
-        if !cid::is_valid_cid(&json_cid) {
-            return Err(MetadataError::InvalidCidFormat);
-        }
-        
-        // Validate model hash format
-        if !hash::is_valid_hash(&model_hash) {
-            return Err(MetadataError::HashVerificationFailed);
-        }
-        
-        // Validate required fields are not empty
-        if name.is_empty() {
-            return Err(MetadataError::MissingRequiredField);
-        }
-        
-        if description.is_empty() {
-            return Err(MetadataError::MissingRequiredField);
-        }
-        
-        if version.is_empty() {
-            return Err(MetadataError::MissingRequiredField);
-        }
-        
-        // Create structured metadata object
-        let metadata = AgentMetadata {
+        // Use the reusable parser from common-utils
+        let parsed = self.parser.parse_metadata(
+            env,
             json_cid,
             model_hash,
             name,
             description,
             version,
             extra_fields,
-        };
+        ).map_err(MetadataError::from_validation_error)?;
         
-        Ok(metadata)
+        // Convert to AgentMetadata
+        Ok(AgentMetadata::from_parsed(parsed))
     }
     
     /// Validate JSON CID format only
-    pub fn validate_cid(&self, cid: &Bytes) -> Result<(), MetadataError> {
-        if cid::is_valid_cid(cid) {
-            Ok(())
-        } else {
-            Err(MetadataError::InvalidCidFormat)
-        }
+    pub fn validate_cid(&self, env: &Env, cid: &Bytes) -> Result<(), MetadataError> {
+        self.parser.parse_cid(env, cid)
+            .map(|_| ())
+            .map_err(MetadataError::from_validation_error)
     }
     
     /// Validate model hash format only
-    pub fn validate_model_hash(&self, hash: &Bytes) -> Result<(), MetadataError> {
-        if hash::is_valid_hash(hash) {
-            Ok(())
-        } else {
-            Err(MetadataError::HashVerificationFailed)
-        }
+    pub fn validate_model_hash(&self, env: &Env, hash: &Bytes) -> Result<(), MetadataError> {
+        self.parser.parse_hash(env, hash)
+            .map(|_| ())
+            .map_err(MetadataError::from_validation_error)
     }
     
     /// Verify that a provided hash matches the expected hash
@@ -202,7 +217,7 @@ impl Default for MetadataValidator {
 pub mod convenience {
     use super::*;
     
-    /// Quick validation of all metadata components
+    /// Quick validation of all metadata components using parser
     pub fn validate_metadata_quick(
         env: &Env,
         json_cid: Bytes,
@@ -226,13 +241,34 @@ pub mod convenience {
     
     /// Validate only CID and hash (for quick checks)
     pub fn validate_cid_and_hash(
+        env: &Env,
         json_cid: Bytes,
         model_hash: Bytes,
     ) -> Result<(), MetadataError> {
         let validator = MetadataValidator::new();
-        validator.validate_cid(&json_cid)?;
-        validator.validate_model_hash(&model_hash)?;
+        validator.validate_cid(env, &json_cid)?;
+        validator.validate_model_hash(env, &model_hash)?;
         Ok(())
+    }
+    
+    /// Build metadata using the builder pattern
+    pub fn build_metadata(
+        env: &Env,
+        json_cid: Bytes,
+        model_hash: Bytes,
+        name: Bytes,
+        description: Bytes,
+        version: Bytes,
+    ) -> Result<AgentMetadata, MetadataError> {
+        MetadataBuilder::new()
+            .with_cid(json_cid)
+            .with_hash(model_hash)
+            .with_name(name)
+            .with_description(description)
+            .with_version(version)
+            .build(env)
+            .map(AgentMetadata::from_parsed)
+            .map_err(MetadataError::from_validation_error)
     }
 }
 

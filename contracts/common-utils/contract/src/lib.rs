@@ -4,6 +4,7 @@ pub mod error;
 pub mod oracle_bridge;
 pub mod marketplace_types;
 pub mod marketplace;
+pub mod parser;
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, Symbol, Address, Env, Bytes, Vec, 
