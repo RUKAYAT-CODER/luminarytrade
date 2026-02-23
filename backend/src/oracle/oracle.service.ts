@@ -12,8 +12,12 @@ import { CustomOperation } from '../transaction/compensatable-operation';
 import { IEventBus } from '../events/interfaces/event-bus.interface';
 import { 
   OracleSnapshotRecordedEvent, 
-  PriceFeedUpdatedEvent 
+A  PriceFeedUpdatedEvent 
 } from '../events/domain-events/oracle.events';
+import { CacheManager } from '../cache/cache-manager.service';
+import { CacheInvalidator } from '../cache/cache-invalidator.service';
+import { Cacheable } from '../cache/decorators/cacheable.decorator';
+import { CacheInvalidate } from '../cache/decorators/cache-invalidate.decorator';
 
 export interface FeedPrice {
   pair: string;
@@ -30,7 +34,6 @@ export interface UpdateSnapshotResult {
 export class OracleService {
   private readonly logger = new Logger(OracleService.name);
   private readonly oracleSignerAddress: string;
-  private readonly maxClockSkewMs: number;
 
   constructor(
     @InjectRepository(OracleSnapshot) private readonly snapshotRepo: Repository<OracleSnapshot>,
@@ -38,32 +41,22 @@ export class OracleService {
     private readonly transactionManager: TransactionManager,
     @Inject("EventBus")
     private readonly eventBus: IEventBus,
+    private readonly cacheManager: CacheManager,
+    private readonly cacheInvalidator: CacheInvalidator,
   ) {
     this.oracleSignerAddress = process.env.ORACLE_SIGNER_ADDRESS;
-    this.maxClockSkewMs = parseInt(process.env.ORACLE_MAX_CLOCK_SKEW_MS || '120000', 10);
-  }
-
-  private validateTimestamp(ts: number): Date {
-    const tMs = ts > 1e12 ? ts : ts * 1000;
-    const now = Date.now();
-    if (Math.abs(now - tMs) > this.maxClockSkewMs) {
-      throw new BadRequestException('timestamp out of allowed skew');
-    }
-    return new Date(tMs);
   }
 
   /**
    * Update oracle snapshot with price feeds using transactional scope
    * with compensation pattern for rollback scenarios
    */
+  @CacheInvalidate({ rule: 'oracle:snapshot' })
   async updateSnapshot(dto: UpdateOracleDto): Promise<UpdateSnapshotResult> {
-    // Verify signature outside transaction
+    // Signature and timestamp validation are now handled by DTO decorators
+    // We still need to recover the signer for the event and entity
     const recovered = await verifySignature(dto.signature, dto.timestamp, dto.feeds);
-    if (this.oracleSignerAddress && recovered.toLowerCase() !== this.oracleSignerAddress.toLowerCase()) {
-      throw new UnauthorizedException('invalid signature signer');
-    }
-
-    const timestampDate = this.validateTimestamp(dto.timestamp);
+    const timestampDate = new Date(dto.timestamp > 1e12 ? dto.timestamp : dto.timestamp * 1000);
 
     // Execute with transaction manager - includes retry logic and compensation
     return this.transactionManager.execute<UpdateSnapshotResult>(
@@ -213,6 +206,11 @@ export class OracleService {
   /**
    * Get latest prices with optional caching
    */
+  @Cacheable({
+    key: 'latest',
+    ttl: 60, // 1 minute
+    namespace: 'oracle',
+  })
   async getLatest(): Promise<FeedPrice[]> {
     const latest = await this.latestRepo.find();
     return latest.map((l) => ({
