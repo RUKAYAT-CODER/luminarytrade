@@ -5,6 +5,7 @@ pub mod oracle_bridge;
 pub mod marketplace_types;
 pub mod marketplace;
 pub mod validator;
+pub mod parser;
 
 use soroban_sdk::{
     contract,
